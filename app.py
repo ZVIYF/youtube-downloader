@@ -83,29 +83,23 @@ def get_db() -> Generator[Session, None, None]:
 # ---------------------------------------------------------------------------
 # Password Hashing & Cookie-Based Session Auth
 # ---------------------------------------------------------------------------
-try:
-    from passlib.context import CryptContext
-    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+import bcrypt
 
-    def hash_password(password: str) -> str:
-        return pwd_context.hash(password)
 
-    def verify_password(plain: str, hashed: str) -> bool:
-        return pwd_context.verify(plain, hashed)
-except ImportError:
-    # shortcut: fallback pbkdf2 when passlib is omitted or building lightweight tests
-    def hash_password(password: str) -> str:
-        salt = os.urandom(16)
-        key = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 100_000)
-        return f"{salt.hex()}:{key.hex()}"
+def hash_password(password: str) -> str:
+    """Hash password directly using bcrypt."""
+    pwd_bytes = password.encode("utf-8")[:72]
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(pwd_bytes, salt).decode("utf-8")
 
-    def verify_password(plain: str, hashed: str) -> bool:
-        try:
-            salt_hex, key_hex = hashed.split(":", 1)
-            check = hashlib.pbkdf2_hmac("sha256", plain.encode(), bytes.fromhex(salt_hex), 100_000)
-            return hmac.compare_digest(check.hex(), key_hex)
-        except Exception:
-            return False
+
+def verify_password(plain: str, hashed: str) -> bool:
+    """Verify plain password against bcrypt hash."""
+    try:
+        return bcrypt.checkpw(plain.encode("utf-8")[:72], hashed.encode("utf-8"))
+    except Exception:
+        return False
+
 
 
 def create_session_token(user_id: int) -> str:

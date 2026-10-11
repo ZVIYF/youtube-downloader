@@ -189,3 +189,20 @@ def test_logout_flow(client: TestClient) -> None:
     resp = client.get("/logout", follow_redirects=False)
     assert resp.status_code == 303
     assert resp.headers["location"] == "/login"
+
+
+def test_bcrypt_direct_hashing_and_truncation() -> None:
+    from app import hash_password, verify_password
+
+    # Normal password
+    pwd = "my_secret_password"
+    hashed = hash_password(pwd)
+    assert verify_password(pwd, hashed)
+    assert not verify_password("wrong_pwd", hashed)
+
+    # Password longer than 72 bytes (verifies no passlib/bcrypt crash)
+    long_pwd = "A" * 128
+    hashed_long = hash_password(long_pwd)
+    assert verify_password(long_pwd, hashed_long)
+    assert not verify_password("B" * 128, hashed_long)
+
