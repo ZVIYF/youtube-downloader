@@ -19,3 +19,4 @@ services:
       # Set the filename to "service_account.json" and set its mount path to "/etc/secrets/service_account.json".
       - key: GDRIVE_SERVICE_ACCOUNT_FILE
         value: /etc/secrets/service_account.json
+
