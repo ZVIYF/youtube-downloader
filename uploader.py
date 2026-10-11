@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import tempfile
 import time
 from pathlib import Path
 from typing import Callable, Optional
+from urllib.parse import parse_qs, urlparse
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import Resource, build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
-from pytubefix import YouTube
+import requests
 
 SCOPES: list[str] = ["https://www.googleapis.com/auth/drive.file"]
 
@@ -44,6 +46,40 @@ def get_drive_service(credentials_path: str) -> Resource:
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
+def extract_video_id(url: str) -> str:
+    """Extract YouTube video ID from standard or shortened URLs."""
+    parsed = urlparse(url)
+    if parsed.hostname in ("www.youtube.com", "youtube.com"):
+        if parsed.path == "/watch":
+            return parse_qs(parsed.query).get("v", [""])[0]
+        if parsed.path.startswith("/embed/") or parsed.path.startswith("/v/"):
+            parts = parsed.path.split("/")
+            if len(parts) > 2:
+                return parts[2]
+    elif parsed.hostname == "youtu.be":
+        return parsed.path.lstrip("/")
+    match = re.search(r"[a-zA-Z0-9_-]{11}", url)
+    return match.group(0) if match else url
+
+
+def find_media_url(data: object) -> Optional[str]:
+    """Recursively search JSON structures for direct mp4 or googlevideo media URLs."""
+    if isinstance(data, str):
+        if data.startswith("http") and (".mp4" in data or "googlevideo.com/videoplayback" in data):
+            return data
+    elif isinstance(data, dict):
+        for val in data.values():
+            found = find_media_url(val)
+            if found:
+                return found
+    elif isinstance(data, (list, tuple)):
+        for item in data:
+            found = find_media_url(item)
+            if found:
+                return found
+    return None
+
+
 def download_video(
     url: str,
     output_dir: Optional[Path] = None,
@@ -51,35 +87,62 @@ def download_video(
     progress_store: Optional[dict[str, dict]] = None,
     progress_callback: Optional[Callable[[int], None]] = None,
 ) -> Path:
-    """Download video via pytubefix with TV client and progress tracking."""
-    def on_progress(stream, chunk, bytes_remaining):
-        total_size = stream.filesize
-        bytes_downloaded = total_size - bytes_remaining
-        percentage = int((bytes_downloaded / total_size) * 100)
-        if progress_store is not None and task_id:
-            progress_store[task_id] = {
-                "phase": "downloading",
-                "progress": percentage,
-                "file_id": "",
-            }
-        if progress_callback:
-            progress_callback(percentage)
+    """Download video via RapidAPI and stream to local mp4 file with progress tracking."""
+    rapidapi_key = os.getenv("RAPIDAPI_KEY", "")
+    rapidapi_host = os.getenv("RAPIDAPI_HOST", "")
+    rapidapi_url = os.getenv("RAPIDAPI_URL", "")
 
-    yt = YouTube(url, on_progress_callback=on_progress, client="TV", use_po_token=True)
-    video = (
-        yt.streams.filter(progressive=True, file_extension="mp4")
-        .order_by("resolution")
-        .desc()
-        .first()
-    )
-    if not video:
-        video = yt.streams.filter(file_extension="mp4").first()
-    if not video:
-        raise RuntimeError("No downloadable MP4 video stream found.")
+    if not rapidapi_url:
+        raise ValueError("RAPIDAPI_URL environment variable is required.")
 
-    target_dir = str(output_dir) if output_dir else ("/tmp" if os.name != "nt" else tempfile.gettempdir())
-    file_path = video.download(output_path=target_dir)
-    return Path(file_path)
+    video_id = extract_video_id(url)
+    headers = {
+        "x-rapidapi-key": rapidapi_key,
+        "x-rapidapi-host": rapidapi_host,
+    }
+    params = {"id": video_id, "url": url}
+
+    api_resp = requests.get(rapidapi_url, headers=headers, params=params, timeout=30)
+    api_resp.raise_for_status()
+
+    direct_url = find_media_url(api_resp.json())
+    if not direct_url:
+        raise RuntimeError("Failed to locate direct video URL (.mp4 / googlevideo) in RapidAPI response.")
+
+    target_dir = output_dir if output_dir else Path("/tmp" if os.name != "nt" else tempfile.gettempdir())
+    local_file = target_dir / f"{video_id or 'video'}.mp4"
+
+    with requests.get(direct_url, stream=True, timeout=120) as stream_resp:
+        stream_resp.raise_for_status()
+        total_size = int(stream_resp.headers.get("content-length", 0))
+        downloaded = 0
+
+        with open(local_file, "wb") as f:
+            for chunk in stream_resp.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0:
+                        pct = int(downloaded / total_size * 100)
+                        if progress_store is not None and task_id:
+                            progress_store[task_id] = {
+                                "phase": "downloading",
+                                "progress": pct,
+                                "file_id": "",
+                            }
+                        if progress_callback:
+                            progress_callback(pct)
+
+    if progress_callback:
+        progress_callback(100)
+    if progress_store is not None and task_id:
+        progress_store[task_id] = {
+            "phase": "downloading",
+            "progress": 100,
+            "file_id": "",
+        }
+
+    return local_file
 
 
 def upload_to_drive(
