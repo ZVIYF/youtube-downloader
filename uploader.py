@@ -71,6 +71,7 @@ def download_video(
         "merge_output_format": "mp4",
         "quiet": False,
         "no_warnings": True,
+        "extractor_args": {"youtube": ["player_client=android", "player_skip=web"]},
         "progress_hooks": [progress_hook] if progress_callback else [],
     }
 
