@@ -3,6 +3,7 @@
 *.env
 service_account.json
 *.json.secret
+*cookies*.txt
 
 # Database
 *.db
