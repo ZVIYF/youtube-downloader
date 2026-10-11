@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import socket
 import tempfile
 import time
@@ -65,6 +66,14 @@ def download_video(
                 if total > 0:
                     progress_callback(int(downloaded / total * 100))
 
+    cookiefile: Optional[str] = None
+    env_cookie_file = os.getenv("YT_COOKIES_FILE")
+    if env_cookie_file:
+        writable_cookie_file = Path(tempfile.gettempdir()) / "youtube_cookies.txt"
+        if os.path.exists(env_cookie_file):
+            shutil.copy2(env_cookie_file, writable_cookie_file)
+        cookiefile = str(writable_cookie_file)
+
     ydl_opts = {
         "outtmpl": outtmpl,
         "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
@@ -72,7 +81,7 @@ def download_video(
         "quiet": False,
         "no_warnings": True,
         "extractor_args": {"youtube": ["player_client=tv,ios"]},
-        "cookiefile": os.getenv("YT_COOKIES_FILE", None),
+        "cookiefile": cookiefile,
         "progress_hooks": [progress_hook] if progress_callback else [],
     }
 
