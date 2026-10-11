@@ -174,14 +174,24 @@ def test_dashboard_and_background_upload_trigger(client: TestClient) -> None:
             follow_redirects=False,
         )
         assert upload_resp.status_code == 200
-        assert "Process Started" in upload_resp.text
-        assert target_yt_url in upload_resp.text
+        data = upload_resp.json()
+        assert "task_id" in data
+        task_id = data["task_id"]
 
         # Verify background task was scheduled with user's drive folder
         mock_bg_task.assert_called_once()
         call_kwargs = mock_bg_task.call_args.kwargs
+        assert call_kwargs["task_id"] == task_id
         assert call_kwargs["url"] == target_yt_url
         assert call_kwargs["folder_id"] == "target_folder_999"
+
+        # Verify GET /status/{task_id} returns task status
+        status_resp = client.get(f"/status/{task_id}")
+        assert status_resp.status_code == 200
+        assert status_resp.json()["phase"] == "pending"
+
+        # Verify GET /status/nonexistent returns 404
+        assert client.get("/status/nonexistent-task").status_code == 404
 
 
 def test_logout_flow(client: TestClient) -> None:

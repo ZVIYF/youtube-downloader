@@ -9,7 +9,9 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import uuid
 from typing import Generator, Optional
+
 
 from fastapi import (
     BackgroundTasks,
@@ -48,6 +50,10 @@ SECRET_KEY: str = os.getenv("SECRET_KEY", "ponytail-insecure-secret-key-change-m
 DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./app.db")
 CREDENTIALS_PATH: str = os.getenv("GDRIVE_SERVICE_ACCOUNT_FILE", "service_account.json")
 CHUNK_SIZE_MB: int = int(os.getenv("CHUNK_SIZE_MB", "10"))
+
+# In-memory progress tracker: task_id -> {phase, progress, file_id}
+progress_store: dict[str, dict] = {}
+
 
 # ---------------------------------------------------------------------------
 # Database Model & Session (SQLAlchemy SQLite)
@@ -288,33 +294,41 @@ def dashboard(
     )
 
 
-@app.post("/upload", response_class=HTMLResponse)
+@app.post("/upload")
 def start_upload(
-    request: Request,
     background_tasks: BackgroundTasks,
     url: str = Form(...),
     user: User = Depends(get_current_user),
-) -> HTMLResponse:
-    """Trigger background download and upload, returning immediate feedback."""
+) -> dict[str, str]:
+    """Trigger background download and upload, returning task_id for progress tracking."""
     if not user.drive_folder_id:
-        return RedirectResponse(url="/setup-drive", status_code=status.HTTP_303_SEE_OTHER)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Google Drive folder not configured.",
+        )
 
     clean_url = url.strip()
+    task_id = str(uuid.uuid4())
+    progress_store[task_id] = {"phase": "pending", "progress": 0, "file_id": ""}
     background_tasks.add_task(
         process_video_background,
+        task_id=task_id,
         url=clean_url,
         credentials_path=CREDENTIALS_PATH,
         folder_id=user.drive_folder_id,
         chunk_size_mb=CHUNK_SIZE_MB,
+        progress_store=progress_store,
     )
+    return {"task_id": task_id}
 
-    return templates.TemplateResponse(
-        request=request,
-        name="dashboard.html",
-        context={
-            "user": user,
-            "message": f"Downloading '{clean_url}' and uploading to Google Drive in the background.",
-        },
-    )
+
+@app.get("/status/{task_id}")
+def get_task_status(task_id: str) -> dict:
+    """Return live progress status for a background download/upload task."""
+    state = progress_store.get(task_id)
+    if not state:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+    return state
+
 
 

@@ -1,14 +1,15 @@
-"""YouTube downloader and Google Drive chunked resumable uploader module."""
+"""YouTube downloader and Google Drive chunked resumable uploader module with progress tracking."""
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import tempfile
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import Resource, build
@@ -44,15 +45,33 @@ def get_drive_service(credentials_path: str) -> Resource:
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
-def download_video(url: str, output_dir: Path) -> Path:
-    """Download video via yt-dlp to output_dir and return file path."""
+def download_video(
+    url: str,
+    output_dir: Path,
+    progress_callback: Optional[Callable[[int], None]] = None,
+) -> Path:
+    """Download video via yt-dlp to output_dir with optional progress callback."""
     outtmpl = str(output_dir / "%(title)s [%(id)s].%(ext)s")
+
+    def progress_hook(d: dict) -> None:
+        if d.get("status") == "downloading" and progress_callback:
+            percent_str = d.get("_percent_str", "").replace("%", "").strip()
+            clean_str = re.sub(r"\x1b\[[0-9;]*m", "", percent_str)
+            try:
+                progress_callback(int(float(clean_str)))
+            except (ValueError, TypeError):
+                total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+                downloaded = d.get("downloaded_bytes") or 0
+                if total > 0:
+                    progress_callback(int(downloaded / total * 100))
+
     ydl_opts = {
         "outtmpl": outtmpl,
         "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "merge_output_format": "mp4",
         "quiet": False,
         "no_warnings": True,
+        "progress_hooks": [progress_hook] if progress_callback else [],
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -76,8 +95,9 @@ def upload_to_drive(
     folder_id: Optional[str] = None,
     chunk_size_mb: int = 10,
     max_retries: int = 5,
+    progress_callback: Optional[Callable[[int], None]] = None,
 ) -> str:
-    """Stream file to Google Drive using chunked resumable upload with retry backoff."""
+    """Stream file to Google Drive using chunked resumable upload with retry backoff and progress callback."""
     file_metadata: dict[str, str | list[str]] = {"name": file_path.name}
     if folder_id:
         file_metadata["parents"] = [folder_id]
@@ -97,7 +117,10 @@ def upload_to_drive(
             try:
                 status, response = request.next_chunk()
                 if status:
-                    print(f"[{file_path.name}] Uploading: {int(status.progress() * 100)}%")
+                    pct = int(status.progress() * 100)
+                    print(f"[{file_path.name}] Uploading: {pct}%")
+                    if progress_callback:
+                        progress_callback(pct)
                 break
             except (HttpError, socket.error, OSError) as error:
                 if attempt == max_retries - 1:
@@ -110,27 +133,48 @@ def upload_to_drive(
 
 
 def process_video_background(
+    task_id: str,
     url: str,
     credentials_path: str,
     folder_id: Optional[str] = None,
     chunk_size_mb: int = 10,
+    progress_store: Optional[dict[str, dict]] = None,
 ) -> None:
-    """Execute download and upload in background; guarantee temporary file deletion."""
+    """Execute download and upload in background; update progress_store and delete temporary files."""
     try:
+        if progress_store is not None:
+            progress_store[task_id] = {"phase": "downloading", "progress": 0, "file_id": ""}
+
         service = get_drive_service(credentials_path)
         with tempfile.TemporaryDirectory(prefix="yt_gdrive_") as temp_dir:
             temp_path = Path(temp_dir)
-            print(f"Starting download: {url}")
-            local_file = download_video(url, temp_path)
-            print(f"Downloaded: {local_file.name}. Starting Drive upload to folder '{folder_id}'...")
+            print(f"[{task_id}] Starting download: {url}")
+
+            def on_download(pct: int) -> None:
+                if progress_store is not None:
+                    progress_store[task_id] = {"phase": "downloading", "progress": pct, "file_id": ""}
+
+            local_file = download_video(url, temp_path, progress_callback=on_download)
+            print(f"[{task_id}] Downloaded: {local_file.name}. Starting Drive upload to folder '{folder_id}'...")
+
+            if progress_store is not None:
+                progress_store[task_id] = {"phase": "uploading", "progress": 0, "file_id": ""}
+
+            def on_upload(pct: int) -> None:
+                if progress_store is not None:
+                    progress_store[task_id] = {"phase": "uploading", "progress": pct, "file_id": ""}
 
             file_id = upload_to_drive(
                 service=service,
                 file_path=local_file,
                 folder_id=folder_id,
                 chunk_size_mb=chunk_size_mb,
+                progress_callback=on_upload,
             )
-            print(f"Background upload completed successfully. Drive File ID: {file_id}")
+            print(f"[{task_id}] Background upload completed. Drive File ID: {file_id}")
+            if progress_store is not None:
+                progress_store[task_id] = {"phase": "done", "progress": 100, "file_id": file_id}
     except Exception as exc:
-        print(f"Background processing error for {url}: {exc}")
-
+        print(f"[{task_id}] Background processing error for {url}: {exc}")
+        if progress_store is not None:
+            progress_store[task_id] = {"phase": "error", "progress": 0, "file_id": "", "error": str(exc)}
