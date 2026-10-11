@@ -68,11 +68,14 @@ def download_video(
 
     cookiefile: Optional[str] = None
     env_cookie_file = os.getenv("YT_COOKIES_FILE")
-    if env_cookie_file:
-        writable_cookie_file = Path(tempfile.gettempdir()) / "youtube_cookies.txt"
-        if os.path.exists(env_cookie_file):
-            shutil.copy2(env_cookie_file, writable_cookie_file)
-        cookiefile = str(writable_cookie_file)
+    if env_cookie_file and os.path.exists(env_cookie_file):
+        dest_path = Path(tempfile.gettempdir()) / "youtube_cookies.txt"
+        with open(env_cookie_file, "r", encoding="utf-8", errors="replace") as src:
+            content = src.read().replace("\r\n", "\n")
+        with open(dest_path, "w", encoding="utf-8", newline="\n") as dst:
+            dst.write(content)
+        print(f"DEBUG: Cookies sanitized and written. Size: {os.path.getsize(dest_path)} bytes")
+        cookiefile = str(dest_path)
 
     ydl_opts = {
         "outtmpl": outtmpl,
