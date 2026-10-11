@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
-import shutil
 import socket
 import tempfile
 import time
@@ -16,7 +14,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import Resource, build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
-import yt_dlp
+import requests
 
 SCOPES: list[str] = ["https://www.googleapis.com/auth/drive.file"]
 
@@ -51,54 +49,58 @@ def download_video(
     output_dir: Path,
     progress_callback: Optional[Callable[[int], None]] = None,
 ) -> Path:
-    """Download video via yt-dlp to output_dir with optional progress callback."""
-    outtmpl = str(output_dir / "%(title)s [%(id)s].%(ext)s")
+    """Download video via Cobalt API directly into output_dir with streaming progress."""
+    api_url = os.getenv("COBALT_API_URL", "https://api.cobalt.tools/api/json")
+    api_key = os.getenv("COBALT_API_KEY")
 
-    def progress_hook(d: dict) -> None:
-        if d.get("status") == "downloading" and progress_callback:
-            percent_str = d.get("_percent_str", "").replace("%", "").strip()
-            clean_str = re.sub(r"\x1b\[[0-9;]*m", "", percent_str)
-            try:
-                progress_callback(int(float(clean_str)))
-            except (ValueError, TypeError):
-                total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
-                downloaded = d.get("downloaded_bytes") or 0
-                if total > 0:
-                    progress_callback(int(downloaded / total * 100))
-
-    cookiefile: Optional[str] = None
-    env_cookie_file = os.getenv("YT_COOKIES_FILE")
-    if env_cookie_file and os.path.exists(env_cookie_file):
-        dest_path = Path(tempfile.gettempdir()) / "youtube_cookies.txt"
-        with open(env_cookie_file, "r", encoding="utf-8", errors="replace") as src:
-            content = src.read().replace("\r\n", "\n")
-        with open(dest_path, "w", encoding="utf-8", newline="\n") as dst:
-            dst.write(content)
-        print(f"DEBUG: Cookies sanitized and written. Size: {os.path.getsize(dest_path)} bytes")
-        cookiefile = str(dest_path)
-
-    ydl_opts = {
-        "outtmpl": outtmpl,
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-        "merge_output_format": "mp4",
-        "quiet": False,
-        "no_warnings": True,
-        "extractor_args": {"youtube": ["player_client=tv,ios"]},
-        "cookiefile": cookiefile,
-        "progress_hooks": [progress_hook] if progress_callback else [],
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
     }
+    if api_key:
+        headers["Authorization"] = f"Api-Key {api_key}"
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        if not info:
-            raise RuntimeError("Failed to extract video information.")
-        filename = ydl.prepare_filename(info)
+    payload = {"url": url}
 
-    target_path = Path(filename).with_suffix(".mp4")
-    if not target_path.exists():
-        target_path = Path(filename)
-    if not target_path.exists():
-        raise FileNotFoundError(f"Expected download file missing: {target_path}")
+    response = requests.post(api_url, headers=headers, json=payload, timeout=30)
+    # If the default /api/json returned shutdown message (v7), attempt root endpoint fallback
+    if response.status_code == 400 and "/api/json" in api_url:
+        fallback_url = api_url.replace("/api/json", "/")
+        fallback_resp = requests.post(fallback_url, headers=headers, json=payload, timeout=30)
+        if fallback_resp.ok:
+            response = fallback_resp
+
+    if not response.ok:
+        raise RuntimeError(f"Cobalt API request failed ({response.status_code}): {response.text}")
+
+    data = response.json()
+    direct_url = data.get("url")
+    if not direct_url:
+        status = data.get("status")
+        detail = data.get("text") or data.get("error", {}).get("code")
+        raise RuntimeError(f"Cobalt API did not return a video URL (status: {status}, detail: {detail})")
+
+    filename = data.get("filename") or f"video_{int(time.time())}.mp4"
+    if not filename.endswith(".mp4"):
+        filename += ".mp4"
+    target_path = output_dir / filename
+
+    with requests.get(direct_url, stream=True, timeout=120) as stream_resp:
+        stream_resp.raise_for_status()
+        total_size = int(stream_resp.headers.get("content-length", 0))
+        downloaded = 0
+
+        with open(target_path, "wb") as f:
+            for chunk in stream_resp.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0 and progress_callback:
+                        pct = int(downloaded / total_size * 100)
+                        progress_callback(pct)
+
+    if progress_callback:
+        progress_callback(100)
 
     return target_path
 
