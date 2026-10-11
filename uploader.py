@@ -14,7 +14,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import Resource, build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
-import requests
+from pytubefix import YouTube
 
 SCOPES: list[str] = ["https://www.googleapis.com/auth/drive.file"]
 
@@ -46,63 +46,40 @@ def get_drive_service(credentials_path: str) -> Resource:
 
 def download_video(
     url: str,
-    output_dir: Path,
+    output_dir: Optional[Path] = None,
+    task_id: Optional[str] = None,
+    progress_store: Optional[dict[str, dict]] = None,
     progress_callback: Optional[Callable[[int], None]] = None,
 ) -> Path:
-    """Download video via Cobalt API directly into output_dir with streaming progress."""
-    api_url = os.getenv("COBALT_API_URL", "https://api.cobalt.tools/api/json")
-    api_key = os.getenv("COBALT_API_KEY")
+    """Download video via pytubefix with TV client and progress tracking."""
+    def on_progress(stream, chunk, bytes_remaining):
+        total_size = stream.filesize
+        bytes_downloaded = total_size - bytes_remaining
+        percentage = int((bytes_downloaded / total_size) * 100)
+        if progress_store is not None and task_id:
+            progress_store[task_id] = {
+                "phase": "downloading",
+                "progress": percentage,
+                "file_id": "",
+            }
+        if progress_callback:
+            progress_callback(percentage)
 
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-    }
-    if api_key:
-        headers["Authorization"] = f"Api-Key {api_key}"
+    yt = YouTube(url, on_progress_callback=on_progress, client="TV")
+    video = (
+        yt.streams.filter(progressive=True, file_extension="mp4")
+        .order_by("resolution")
+        .desc()
+        .first()
+    )
+    if not video:
+        video = yt.streams.filter(file_extension="mp4").first()
+    if not video:
+        raise RuntimeError("No downloadable MP4 video stream found.")
 
-    payload = {"url": url}
-
-    response = requests.post(api_url, headers=headers, json=payload, timeout=30)
-    # If the default /api/json returned shutdown message (v7), attempt root endpoint fallback
-    if response.status_code == 400 and "/api/json" in api_url:
-        fallback_url = api_url.replace("/api/json", "/")
-        fallback_resp = requests.post(fallback_url, headers=headers, json=payload, timeout=30)
-        if fallback_resp.ok:
-            response = fallback_resp
-
-    if not response.ok:
-        raise RuntimeError(f"Cobalt API request failed ({response.status_code}): {response.text}")
-
-    data = response.json()
-    direct_url = data.get("url")
-    if not direct_url:
-        status = data.get("status")
-        detail = data.get("text") or data.get("error", {}).get("code")
-        raise RuntimeError(f"Cobalt API did not return a video URL (status: {status}, detail: {detail})")
-
-    filename = data.get("filename") or f"video_{int(time.time())}.mp4"
-    if not filename.endswith(".mp4"):
-        filename += ".mp4"
-    target_path = output_dir / filename
-
-    with requests.get(direct_url, stream=True, timeout=120) as stream_resp:
-        stream_resp.raise_for_status()
-        total_size = int(stream_resp.headers.get("content-length", 0))
-        downloaded = 0
-
-        with open(target_path, "wb") as f:
-            for chunk in stream_resp.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total_size > 0 and progress_callback:
-                        pct = int(downloaded / total_size * 100)
-                        progress_callback(pct)
-
-    if progress_callback:
-        progress_callback(100)
-
-    return target_path
+    target_dir = str(output_dir) if output_dir else ("/tmp" if os.name != "nt" else tempfile.gettempdir())
+    file_path = video.download(output_path=target_dir)
+    return Path(file_path)
 
 
 def upload_to_drive(
@@ -170,7 +147,13 @@ def process_video_background(
                 if progress_store is not None:
                     progress_store[task_id] = {"phase": "downloading", "progress": pct, "file_id": ""}
 
-            local_file = download_video(url, temp_path, progress_callback=on_download)
+            local_file = download_video(
+                url=url,
+                output_dir=temp_path,
+                task_id=task_id,
+                progress_store=progress_store,
+                progress_callback=on_download,
+            )
             print(f"[{task_id}] Downloaded: {local_file.name}. Starting Drive upload to folder '{folder_id}'...")
 
             if progress_store is not None:

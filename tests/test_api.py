@@ -7,9 +7,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from typing import Generator
 from unittest.mock import MagicMock, patch
 
-# Hermetic mocking: ensure no actual network or Google/yt-dlp calls can occur
+# Hermetic mocking: ensure no actual network or Google/pytubefix calls can occur
 for mod in [
-    "yt_dlp",
+    "pytubefix",
     "google",
     "google.oauth2",
     "google.oauth2.service_account",
@@ -217,45 +217,39 @@ def test_bcrypt_direct_hashing_and_truncation() -> None:
     assert not verify_password("B" * 128, hashed_long)
 
 
-def test_cobalt_download_video(tmp_path: Path) -> None:
+def test_pytubefix_download_video(tmp_path: Path) -> None:
     from uploader import download_video
 
-    mock_post_resp = MagicMock()
-    mock_post_resp.ok = True
-    mock_post_resp.status_code = 200
-    mock_post_resp.json.return_value = {
-        "status": "stream",
-        "url": "https://stream.cobalt.tools/testvideo.mp4",
-        "filename": "my_test_video.mp4",
-    }
+    mock_yt = MagicMock()
+    mock_stream = MagicMock()
+    mock_stream.filesize = 1000
+    expected_file = tmp_path / "test_video.mp4"
+    expected_file.write_bytes(b"dummy video data")
+    mock_stream.download.return_value = str(expected_file)
 
-    mock_get_resp = MagicMock()
-    mock_get_resp.status_code = 200
-    mock_get_resp.headers = {"content-length": "100"}
-    mock_get_resp.iter_content.return_value = [b"a" * 50, b"b" * 50]
-    mock_get_resp.__enter__.return_value = mock_get_resp
-    mock_get_resp.__exit__.return_value = None
+    mock_yt.streams.filter.return_value.order_by.return_value.desc.return_value.first.return_value = mock_stream
 
-    progress_updates: list[int] = []
+    progress_store = {"test_task": {"phase": "pending", "progress": 0}}
 
-    with patch("requests.post", return_value=mock_post_resp) as mock_post, \
-         patch("requests.get", return_value=mock_get_resp) as mock_get:
+    with patch("uploader.YouTube", return_value=mock_yt) as mock_yt_cls:
         out_file = download_video(
             url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
             output_dir=tmp_path,
-            progress_callback=progress_updates.append,
+            task_id="test_task",
+            progress_store=progress_store,
         )
 
+        assert out_file == expected_file
         assert out_file.exists()
-        assert out_file.name == "my_test_video.mp4"
-        assert out_file.read_bytes() == b"a" * 50 + b"b" * 50
-        assert 50 in progress_updates
-        assert 100 in progress_updates
-        mock_post.assert_called_once()
-        mock_get.assert_called_once_with(
-            "https://stream.cobalt.tools/testvideo.mp4",
-            stream=True,
-            timeout=120,
-        )
+        mock_yt_cls.assert_called_once()
+        call_kwargs = mock_yt_cls.call_args.kwargs
+        assert call_kwargs["client"] == "TV"
+        assert callable(call_kwargs["on_progress_callback"])
+
+        # Trigger progress callback to verify math and progress_store update
+        cb = call_kwargs["on_progress_callback"]
+        cb(mock_stream, b"chunk", bytes_remaining=400)
+        assert progress_store["test_task"]["phase"] == "downloading"
+        assert progress_store["test_task"]["progress"] == 60
 
 
