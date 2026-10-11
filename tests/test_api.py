@@ -244,6 +244,7 @@ def test_pytubefix_download_video(tmp_path: Path) -> None:
         mock_yt_cls.assert_called_once()
         call_kwargs = mock_yt_cls.call_args.kwargs
         assert call_kwargs["client"] == "TV"
+        assert call_kwargs.get("use_po_token") is True
         assert callable(call_kwargs["on_progress_callback"])
 
         # Trigger progress callback to verify math and progress_store update
