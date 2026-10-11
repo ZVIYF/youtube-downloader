@@ -217,60 +217,46 @@ def test_bcrypt_direct_hashing_and_truncation() -> None:
     assert not verify_password("B" * 128, hashed_long)
 
 
-def test_rapidapi_download_video(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from uploader import download_video, extract_video_id, find_media_url
+def test_pytubefix_download_video_with_proxy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from uploader import download_video
 
-    assert extract_video_id("https://www.youtube.com/watch?v=dQw4w9WgXcQ") == "dQw4w9WgXcQ"
-    assert extract_video_id("https://youtu.be/dQw4w9WgXcQ") == "dQw4w9WgXcQ"
+    monkeypatch.setenv("YT_PROXY", "http://proxy.test:8080")
 
-    nested_payload = {
-        "status": "success",
-        "data": {
-            "formats": [
-                {"quality": "360p", "url": "https://rr1---sn.googlevideo.com/videoplayback?id=123"},
-            ]
-        }
-    }
-    assert find_media_url(nested_payload) == "https://rr1---sn.googlevideo.com/videoplayback?id=123"
+    mock_yt = MagicMock()
+    mock_stream = MagicMock()
+    mock_stream.filesize = 1000
+    expected_file = tmp_path / "test_video.mp4"
+    expected_file.write_bytes(b"dummy video data")
+    mock_stream.download.return_value = str(expected_file)
 
-    monkeypatch.setenv("RAPIDAPI_URL", "https://yt-stream.p.rapidapi.com/dl")
-    monkeypatch.setenv("RAPIDAPI_KEY", "test-key")
-    monkeypatch.setenv("RAPIDAPI_HOST", "yt-stream.p.rapidapi.com")
-
-    mock_api_resp = MagicMock()
-    mock_api_resp.status_code = 200
-    mock_api_resp.json.return_value = nested_payload
-
-    mock_stream_resp = MagicMock()
-    mock_stream_resp.status_code = 200
-    mock_stream_resp.headers = {"content-length": "100"}
-    mock_stream_resp.iter_content.return_value = [b"x" * 50, b"y" * 50]
-    mock_stream_resp.__enter__.return_value = mock_stream_resp
-    mock_stream_resp.__exit__.return_value = None
+    mock_yt.streams.filter.return_value.order_by.return_value.desc.return_value.first.return_value = mock_stream
 
     progress_store = {"test_task": {"phase": "pending", "progress": 0}}
-    progress_updates: list[int] = []
 
-    def mock_requests_get(url: str, **kwargs):
-        if url == "https://yt-stream.p.rapidapi.com/dl":
-            return mock_api_resp
-        return mock_stream_resp
-
-    with patch("requests.get", side_effect=mock_requests_get):
+    with patch("uploader.YouTube", return_value=mock_yt) as mock_yt_cls:
         out_file = download_video(
             url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
             output_dir=tmp_path,
             task_id="test_task",
             progress_store=progress_store,
-            progress_callback=progress_updates.append,
         )
 
+        assert out_file == expected_file
         assert out_file.exists()
-        assert out_file.name == "dQw4w9WgXcQ.mp4"
-        assert out_file.read_bytes() == b"x" * 50 + b"y" * 50
+        mock_yt_cls.assert_called_once()
+        call_kwargs = mock_yt_cls.call_args.kwargs
+        assert call_kwargs["client"] == "TV"
+        assert call_kwargs.get("use_po_token") is True
+        assert call_kwargs.get("proxies") == {
+            "http": "http://proxy.test:8080",
+            "https": "http://proxy.test:8080",
+        }
+        assert callable(call_kwargs["on_progress_callback"])
+
+        # Trigger progress callback to verify math and progress_store update
+        cb = call_kwargs["on_progress_callback"]
+        cb(mock_stream, b"chunk", bytes_remaining=400)
         assert progress_store["test_task"]["phase"] == "downloading"
-        assert progress_store["test_task"]["progress"] == 100
-        assert 50 in progress_updates
-        assert 100 in progress_updates
+        assert progress_store["test_task"]["progress"] == 60
 
 
