@@ -1,0 +1,27 @@
+# Environment and secrets
+.env
+*.env
+service_account.json
+*.json.secret
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Python cache & virtual environment
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Temporary files
+*.tmp
+tmp/

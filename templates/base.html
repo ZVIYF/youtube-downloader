@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}YouTube to Google Drive{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen flex flex-col font-sans">
+    <nav class="bg-white shadow-sm border-b border-gray-200">
+        <div class="max-w-5xl mx-auto px-4 py-3 flex justify-between items-center">
+            <a href="/" class="text-lg font-bold text-gray-800 flex items-center gap-2">
+                <span class="text-red-600">▶</span> YouTube to Drive
+            </a>
+            <div class="flex items-center gap-4 text-sm">
+                {% if user %}
+                    <span class="text-gray-600">{{ user.email }}</span>
+                    <a href="/setup-drive" class="text-gray-600 hover:text-blue-600">Settings</a>
+                    <a href="/logout" class="text-red-600 hover:underline">Logout</a>
+                {% else %}
+                    <a href="/login" class="text-gray-600 hover:text-blue-600">Login</a>
+                    <a href="/register" class="text-blue-600 font-semibold hover:underline">Register</a>
+                {% endif %}
+            </div>
+        </div>
+    </nav>
+
+    <main class="flex-grow max-w-5xl mx-auto w-full px-4 py-8">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="bg-white border-t border-gray-200 py-4 text-center text-xs text-gray-500">
+        YouTube to Google Drive Uploader
+    </footer>
+</body>
+</html>
+

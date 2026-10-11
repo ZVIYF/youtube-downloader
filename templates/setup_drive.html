@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}Setup Google Drive - YouTube to Drive{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto space-y-6">
+    {% if error %}
+    <div class="bg-red-50 text-red-700 p-3 rounded mb-4 text-sm border border-red-200">
+        {{ error }}
+    </div>
+    {% endif %}
+
+    {% if message %}
+    <div class="bg-green-50 text-green-700 p-3 rounded mb-4 text-sm border border-green-200">
+        {{ message }}
+    </div>
+    {% endif %}
+
+    <div class="instructions-box bg-gray-50 p-6 rounded-lg shadow-sm border border-gray-200" dir="rtl">
+        <h3 class="text-xl font-bold mb-4">ברוך הבא! כדי שהמערכת תוכל להעלות סרטונים ישירות לדרייב שלך, יש להגדיר תיקייה ייעודית פעם אחת:</h3>
+        <ol class="list-decimal list-inside space-y-3 text-gray-700 font-medium">
+            <li>היכנס ל-<a href="https://drive.google.com" target="_blank" class="text-blue-600 hover:underline">Google Drive שלך</a> וצור תיקייה חדשה (למשל: "סרטוני יוטיוב").</li>
+            <li>לחץ קליק ימני על התיקייה שיצרת ובחר ב-<strong>"שיתוף" (Share)</strong>.</li>
+            <li>בשורת חיפוש האנשים, הדבק את כתובת המייל הבאה של המערכת שלנו:<br>
+                <code class="bg-blue-100 text-blue-800 px-3 py-1 rounded text-left inline-block mt-2 font-mono text-sm" dir="ltr">{{ service_account_email }}</code>
+            </li>
+            <li>וודא שההרשאה מוגדרת על <strong>"עורך" (Editor)</strong> ולחץ על שליחה.</li>
+            <li>כנס לתוך התיקייה שיצרת בדרייב, והסתכל על שורת הכתובת (URL) למעלה בדפדפן.</li>
+            <li>העתק משורת הכתובת <strong>רק</strong> את רצף האותיות והמספרים שמופיע אחרי המילה <code>folders/</code>.</li>
+            <li>הדבק את הקוד שהעתקת בשדה למטה ולחץ על "שמור".</li>
+        </ol>
+    </div>
+
+    <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+        <form method="POST" action="/setup-drive" class="space-y-4">
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Google Drive Folder ID</label>
+                <input type="text" name="drive_folder_id" value="{{ current_folder_id or '' }}" required placeholder="e.g. 1a2B3c4D5e6F7g8H9..." class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm">
+            </div>
+            <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-medium px-6 py-2 rounded-lg transition duration-150">
+                שמור (Save)
+            </button>
+        </form>
+    </div>
+</div>
+{% endblock %}
+

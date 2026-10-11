@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: youtube-to-gdrive-uploader
+    env: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /login
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        value: sqlite:///./app.db
+      - key: CHUNK_SIZE_MB
+        value: "10"
+      # NOTE: For Google Drive Service Account authentication:
+      # Upload your service_account.json in the Render Dashboard under:
+      # "Environment" -> "Secret Files".
+      # Set the filename to "service_account.json" and set its mount path to "/etc/secrets/service_account.json".
+      - key: GDRIVE_SERVICE_ACCOUNT_FILE
+        value: /etc/secrets/service_account.json
